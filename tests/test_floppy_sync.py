@@ -322,7 +322,7 @@ def test_floppy_ratings_read_and_write_native_scale(source: str) -> None:
         {
             ("GET", "media/movie"): {"results": [{"item_id": "movie/tmdb/11", "source": source, "score": 8.5}, {"item_id": "movie/tmdb/12", "source": source, "score": 0}], "count": 2},
             ("GET", "media/tv"): {"results": [{"item_id": "tv/tmdb/22", "source": source, "score": 7.5}], "count": 1},
-            ("POST", "media/movie"): {"item_id": "movie/tmdb/11", "score": 9.0},
+            ("PATCH", "media/movie/tmdb/11"): {"item_id": "movie/tmdb/11", "score": 9.0},
         }
     )
 
@@ -333,15 +333,15 @@ def test_floppy_ratings_read_and_write_native_scale(source: str) -> None:
     assert out["tmdb:22"]["rating"] == 7.5
     assert "tmdb:12" not in out
     assert res["count"] == 1
-    assert adapter.client.session.calls[-1]["json"] == {"source": "tmdb", "media_id": "11", "status": 0, "score": 9.0}
+    assert adapter.client.session.calls[-1]["method"] == "PATCH"
+    assert adapter.client.session.calls[-1]["json"] == {"score": 9.0}
 
 
-def test_floppy_ratings_fallback_patch_existing_and_skip_unsupported_scopes() -> None:
+def test_floppy_ratings_patch_tracked_media_and_skip_unsupported_scopes() -> None:
     from providers.sync.floppy import _ratings
 
     adapter = AdapterStub(
         {
-            ("POST", "media/movie"): ResponseStub(400, {"detail": "Invalid media data."}),
             ("PATCH", "media/movie/tmdb/11"): {"item_id": "movie/tmdb/11", "score": 7.0},
         }
     )
@@ -356,8 +356,8 @@ def test_floppy_ratings_fallback_patch_existing_and_skip_unsupported_scopes() ->
 
     assert res["count"] == 1
     assert res["skipped"] == 1
-    assert adapter.client.session.calls[1]["method"] == "PATCH"
-    assert adapter.client.session.calls[1]["json"] == {"score": 7.0}
+    assert [c["method"] for c in adapter.client.session.calls] == ["PATCH"]
+    assert adapter.client.session.calls[0]["json"] == {"score": 7.0}
 
 
 def test_floppy_ratings_create_tracked_items() -> None:
@@ -369,7 +369,8 @@ def test_floppy_ratings_create_tracked_items() -> None:
 
     assert res["count"] == 1
     assert res["skipped"] == 0
-    assert [c["method"] for c in adapter.client.session.calls] == ["POST"]
+    assert [c["method"] for c in adapter.client.session.calls] == ["PATCH", "POST"]
+    assert adapter.client.session.calls[-1]["json"] == {"source": "tmdb", "media_id": "11", "status": 0, "score": 7.0}
 
 
 def test_floppy_ratings_shadow_covers_read_after_write_lag(monkeypatch: Any) -> None:

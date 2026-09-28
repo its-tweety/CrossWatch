@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from cw_platform.id_map import minimal as id_minimal
+from providers.auth._auth_FLOPPY import FloppyAuthError
 from providers.sync._mod_common import build_op_result, unresolved_keys
 
 from ._common import PLANNING, api_patch, canonical_item_key, confirmed_destination, failure_reason, floppy_type_for_item, item_from_row, paged, rating_number, tmdb_enriched_item, track_media, tmdb_id_for_item, unresolved
@@ -120,7 +121,18 @@ def _write(adapter: Any, items: Iterable[Mapping[str, Any]], *, clear: bool, dry
             if clear:
                 api_patch(adapter, f"media/{typ}/tmdb/{tmdb_id}", json={"score": None})
             else:
-                track_media(adapter, typ, tmdb_id, payload={"status": PLANNING, "score": rating}, patch_payload={"score": rating})
+                # PATCH the score on the already-tracked media row. Floppy's
+                # POST /media/{type} is append-oriented: for provider-sourced
+                # items it always creates a new consumption row (201, never
+                # 409), so a POST-first strategy duplicates consumption entries.
+                # Fall back to the creating POST only when the media is not
+                # tracked yet (404).
+                try:
+                    api_patch(adapter, f"media/{typ}/tmdb/{tmdb_id}", json={"score": rating})
+                except FloppyAuthError as exc:
+                    if getattr(exc, "status_code", None) != 404:
+                        raise
+                    track_media(adapter, typ, tmdb_id, payload={"status": PLANNING, "score": rating}, patch_payload={"score": rating})
         except Exception as exc:
             entry = unresolved(item, failure_reason(exc))
             unresolved_rows.append(entry)
