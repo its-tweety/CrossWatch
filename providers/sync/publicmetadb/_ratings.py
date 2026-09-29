@@ -41,6 +41,10 @@ def _shadow_load() -> dict[str, Any]:
     doc = read_json(_shadow_path())
     if not isinstance(doc.get("items"), dict):
         doc["items"] = {}
+    doc["items"] = {
+        _item_key(rec["item"], label=rec.get("label")) if isinstance(rec, Mapping) and isinstance(rec.get("item"), Mapping) and rec["item"] else key: rec
+        for key, rec in doc["items"].items()
+    }
     return doc
 
 
@@ -167,7 +171,7 @@ def _to_minimal(row: Mapping[str, Any], *, episode_rating: bool) -> dict[str, An
     rid = str(row.get("id") or row.get("rating_id") or "").strip()
 
     if episode_rating:
-        season = as_int(row.get("season") or row.get("season_number"))
+        season = as_int(next((v for v in (row.get("season"), row.get("season_number")) if v is not None), None))
         episode = as_int(row.get("episode") or row.get("episode_number"))
         if season is None or episode is None:
             return None

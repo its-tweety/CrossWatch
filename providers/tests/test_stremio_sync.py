@@ -413,6 +413,18 @@ def test_history_read_prefers_the_candidate_order_the_anchor_agrees_with(monkeyp
     assert set(index) == {"tmdb:1396#s01e01"}
 
 
+def test_history_read_keeps_watched_season_zero_specials(monkeypatch) -> None:
+    aired = [{"id": "tmdb:1396:1:1", "season": 1, "episode": 1, "title": "Pilot"}]
+    with_specials = [{"id": "tmdb:1396:0:1", "season": 0, "episode": 1, "title": "Special"}] + aired
+    monkeypatch.setattr(_history, "video_orders_for_series_record", native_orders(aired, with_specials))
+    adapter = FakeAdapter([series_record(watched_value(with_specials, {"tmdb:1396:0:1", "tmdb:1396:1:1"})) | {"_id": "tmdb:1396"}])
+
+    index = _history.build_index(adapter)
+
+    assert set(index) == {"tmdb:1396#s00e01", "tmdb:1396#s01e01"}
+    assert index["tmdb:1396#s00e01"]["season"] == 0
+
+
 def test_history_read_reports_cinemeta_anchor_that_is_not_in_the_video_list(monkeypatch) -> None:
     monkeypatch.setattr(_history, "cinemeta_videos", lambda _adapter, _imdb: bb_videos())
     adapter = FakeAdapter([series_record(watched_value([{"id": "tt0903747:9:9"}], {"tt0903747:9:9"}))])
@@ -506,7 +518,7 @@ def test_stremio_ops_records_read_drops_as_scoped_unresolved(tmp_path, monkeypat
     assert mod.OPS.build_index({}, feature="history") == {}
 
     pending = _unresolved.load_unresolved_pending("STREMIO", "history")
-    assert [row["key"] for row in pending] == ["tmdb:1396"]
+    assert [row["key"] for row in pending] == ["tmdb:1396#show"]
     assert pending[0]["reason"] == "stremio_read:native_episode_index_unavailable"
     assert pending[0]["item"]["ids"] == {"tmdb": "1396"}
     assert pending[0]["item"]["_stremio_record_id"] == "tmdb:1396"
@@ -528,7 +540,7 @@ def test_stremio_ops_clears_read_drops_once_the_records_resolve(tmp_path, monkey
     blind = FakeStremioModule([record])
     monkeypatch.setattr(mod.OPS, "_adapter", lambda _cfg: blind)
     assert mod.OPS.build_index({}, feature="history") == {}
-    assert [row["key"] for row in _unresolved.load_unresolved_pending("STREMIO", "history")] == ["tmdb:1396"]
+    assert [row["key"] for row in _unresolved.load_unresolved_pending("STREMIO", "history")] == ["tmdb:1396#show"]
 
     monkeypatch.setattr(_history, "video_orders_for_series_record", native_orders(videos))
     resolving = FakeStremioModule([record])

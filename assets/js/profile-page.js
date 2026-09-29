@@ -177,9 +177,10 @@
   const episodeOf = (item) => {
     const explicit = String(item?.episode_label || item?.episodeLabel || "").trim();
     if (explicit) return explicit;
-    const s = Number(item?.season || item?.season_number || item?.episode?.season_number || 0);
+    const sRaw = [item?.season, item?.season_number, item?.episode?.season_number].find((value) => value !== null && value !== undefined && value !== "");
+    const s = sRaw === undefined ? -1 : Number(sRaw);
     const e = Number(item?.episode || item?.episode_number || item?.episode?.episode_number || 0);
-    return s && e ? `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}` : "";
+    return s >= 0 && e ? `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}` : "";
   };
   const poster = (item, size = "w342") => {
     const show = objectOf(item?.show || item?.series || item?.anime);
@@ -214,9 +215,10 @@
   const watchlistPreviewArt = (item, size = "w300") => {
     const id = tmdbId(item);
     if (!id) return "";
-    const season = Number(item?.season_number || item?.episode?.season_number || item?.episode?.season || item?.season || 0);
+    const seasonRaw = [item?.season_number, item?.episode?.season_number, item?.episode?.season, item?.season].find((value) => value !== null && value !== undefined && value !== "");
+    const season = seasonRaw === undefined ? -1 : Number(seasonRaw);
     const episode = Number(item?.episode_number || item?.episode?.episode_number || item?.episode?.number || item?.episode || 0);
-    if (mediaType(item) && season > 0 && episode > 0) {
+    if (mediaType(item) && season >= 0 && episode > 0) {
       return `/art/tmdb/tv/${encodeURIComponent(String(id))}?kind=still&season=${encodeURIComponent(String(season))}&episode=${encodeURIComponent(String(episode))}&size=${encodeURIComponent(size)}${watchlistArtEvidence(item)}`;
     }
     const kind = mediaType(item) ? "tv" : "movie";

@@ -214,7 +214,7 @@ def select_baseline_keys(success_keys, result) -> list:
 
 from ..provider_instances import normalize_instance_id
 
-from ..id_map import minimal as _minimal, canonical_key as _ck, merge_ids as _merge_ids
+from ..id_map import migrate_media_index, minimal as _minimal, canonical_key as _ck, merge_ids as _merge_ids, _norm_type
 from ..history_events import history_sync_key, minimal_history_item
 from ..anime_mapping.service import (
     anime_mapping_pair_feature_options as _anime_pair_feature_options,
@@ -241,7 +241,7 @@ from ._chunking import effective_chunk_size
 from ._unresolved import load_unresolved_keys, load_unresolved_map, load_unresolved_pending, record_unresolved, clear_unresolved, clear_matched_history_retries, is_remove_retry_reason
 from ._planner import diff, diff_ratings, diff_progress, _pick_rating, _pick_rated_at, _ts_epoch
 from ._phantoms import PhantomGuard
-from ._tombstones import clear_items_for_feature
+from ._tombstones import clear_items_for_feature, media_tombstone_tokens
 
 
 from ._pairs_utils import (
@@ -260,6 +260,7 @@ from ._pairs_utils import (
 )
 from ._pairs_massdelete import maybe_block_mass_delete as _maybe_block_mass_delete
 from ._pairs_blocklist import apply_blocklist
+from ._specials import filter_specials_index, specials_excluded
 from ._history_rewatches import (
     collapse_history_latest,
     config_with_history_rewatches,
@@ -399,6 +400,8 @@ def _show_level_tokens(item: Mapping[str, Any]) -> set[str]:
 
 def _matches_dropped_show(item: Mapping[str, Any], dropped_tokens: set[str]) -> bool:
     if not dropped_tokens or not isinstance(item, Mapping):
+        return False
+    if str(item.get("type") or "").strip().lower() in ("movie", "movies"):
         return False
     return bool(_show_level_tokens(item) & dropped_tokens)
 
@@ -876,7 +879,7 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
     coord_aliases: _HistoryCoordinateAliases = _HistoryCoordinateAliases.disabled()
 
     def _typed_tokens(it: Mapping[str, Any]) -> set[str]:
-        typ = str(it.get("type") or "").strip().lower()
+        typ = _norm_type(it.get("type"))
         show_ids_raw = it.get("show_ids") if isinstance(it.get("show_ids"), Mapping) else {}
         ids_raw = it.get("ids") if isinstance(it.get("ids"), Mapping) else {}
         show_ids = dict(show_ids_raw or {})
@@ -935,7 +938,8 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
             for k, v in ids.items():
                 if v is None or str(v) == "":
                     continue
-                toks.add(f"{str(k).lower()}:{str(v).lower()}")
+                suffix = "#show" if str(k).lower() == "tmdb" and typ in ("show", "anime") else ""
+                toks.add(f"{str(k).lower()}:{str(v).lower()}{suffix}")
 
         return toks
 
@@ -1169,7 +1173,7 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
             if not isinstance(base, Mapping):
                 return {}
             items = base.get("items") or {}
-            return dict(items) if isinstance(items, Mapping) else {}
+            return migrate_media_index(items)
         except Exception:
             return {}
 
@@ -1242,6 +1246,22 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
         dst_cur = _media_type_filter_index(dst_cur, fcfg)
         eff_dst = _media_type_filter_index(eff_dst, fcfg)
 
+    specials_prev_src: dict[str, Any] = {}
+    specials_cur_src: dict[str, Any] = {}
+    specials_eff_src: dict[str, Any] = {}
+    specials_prev_dst: dict[str, Any] = {}
+    specials_cur_dst: dict[str, Any] = {}
+    specials_eff_dst: dict[str, Any] = {}
+    if specials_excluded(feature, fcfg):
+        prev_src, specials_prev_src = filter_specials_index(prev_src)
+        src_cur, specials_cur_src = filter_specials_index(src_cur)
+        eff_src, specials_eff_src = filter_specials_index(eff_src)
+        prev_dst, specials_prev_dst = filter_specials_index(prev_dst)
+        dst_cur, specials_cur_dst = filter_specials_index(dst_cur)
+        eff_dst, specials_eff_dst = filter_specials_index(eff_dst)
+        if specials_cur_src or specials_cur_dst:
+            emit("debug", msg="specials.filtered", feature=feature, src=src, dst=dst, source=len(specials_cur_src), target=len(specials_cur_dst))
+
     src_dropped_tokens: set[str] = set()
     dst_dropped_tokens: set[str] = set()
     if src in ("TRAKT", "MDBLIST", "SIMKL") and _provider_ignore_dropped_enabled(src_cfg, src, feature):
@@ -1261,6 +1281,8 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
 
     dst_full = (dict(prev_dst) | dict(dst_cur)) if dst_sem == "delta" else dict(eff_dst)
     src_idx = (dict(prev_src) | dict(src_cur)) if src_sem == "delta" else dict(eff_src)
+    specials_keep_dst = (specials_prev_dst | specials_cur_dst) if dst_sem == "delta" else specials_eff_dst
+    specials_keep_src = (specials_prev_src | specials_cur_src) if src_sem == "delta" else specials_eff_src
 
     # Keep metadata when the provider index is presence-only.
     dst_full = _enrich_index_payload(dst_full, prev_dst, feature)
@@ -2095,14 +2117,10 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
                         if not it:
                             continue
                         try:
-                            removed_tokens.add(k)
                             if feature == "history" and history_event_mode:
-                                continue
-                            ids = (it.get("ids") or {})
-                            for idk, idv in (ids or {}).items():
-                                if idv is None or str(idv) == "":
-                                    continue
-                                removed_tokens.add(f"{str(idk).lower()}:{str(idv).lower()}")
+                                removed_tokens.add(k)
+                            else:
+                                removed_tokens.update(media_tombstone_tokens(it, k))
                         except Exception:
                             continue
 
@@ -2289,8 +2307,8 @@ def run_one_way_feature(  # pyright: ignore[reportGeneralTypeIssues]
 
             if review is not None and review.retain_deferred(feature, src, src_inst, src_idx, prev_src, _sync_key):
                 now_cp_src = prev_checkpoint(prev_state, src, feature, src_inst)
-            _commit_baseline(provs_block, src, src_inst, feature, src_idx)
-            _commit_baseline(provs_block, dst, dst_inst, feature, dst_commit)
+            _commit_baseline(provs_block, src, src_inst, feature, specials_keep_src | src_idx)
+            _commit_baseline(provs_block, dst, dst_inst, feature, specials_keep_dst | dst_commit)
             _commit_checkpoint(provs_block, src, src_inst, feature, now_cp_src)
             _commit_checkpoint(provs_block, dst, dst_inst, feature, now_cp_dst)
 

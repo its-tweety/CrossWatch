@@ -364,6 +364,8 @@ def _canonical_key(raw_key: str, item: Mapping[str, Any]) -> str:
     for key in ("tmdb", "imdb", "tvdb", "trakt", "simkl", "anilist", "mal", "wetrakr"):
         value = ids.get(key)
         if value not in (None, "", 0, False):
+            if key == "tmdb" and _media_type(item) == "show":
+                return f"{key}:{value}#show"
             return f"{key}:{value}"
     return str(raw_key or _title(item)).strip().lower()
 
@@ -1250,6 +1252,32 @@ def _latest_history_tracker_rows(
     return sorted(rows.values(), key=lambda x: int(x.get("sort_epoch") or 0), reverse=True)
 
 
+_HISTORY_TRUSTED_ALIAS_PREFIXES = ("history|id|", "history|xalias|")
+
+
+def _history_identity_ids(row: Mapping[str, Any]) -> dict[str, str]:
+    ids = _ids(row)
+    source: Any = ids
+    if str(row.get("type") or "").strip().lower() in {"episode", "season"}:
+        source = ids.get("show_ids")
+    if not isinstance(source, Mapping):
+        return {}
+    out: dict[str, str] = {}
+    for key in _ID_KEYS:
+        if key == "slug" or key in _SERVER_SCOPED_ID_KEYS:
+            continue
+        value = _id_alias_value(source.get(key))
+        if value:
+            out[key] = value
+    return out
+
+
+def _history_identity_conflict(prev: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    prev_ids = _history_identity_ids(prev)
+    row_ids = _history_identity_ids(row)
+    return any(prev_ids[key] != value for key, value in row_ids.items() if key in prev_ids)
+
+
 def _merge_history_rows(
     *groups: Iterable[Mapping[str, Any]],
     alias_map: Mapping[str, str] | None = None,
@@ -1265,9 +1293,12 @@ def _merge_history_rows(
                 continue
             match_key = key
             for alias in _history_aliases(row, alias_map):
-                if alias in aliases:
-                    match_key = aliases[alias]
-                    break
+                if alias not in aliases:
+                    continue
+                if not alias.startswith(_HISTORY_TRUSTED_ALIAS_PREFIXES) and _history_identity_conflict(rows[aliases[alias]], row):
+                    continue
+                match_key = aliases[alias]
+                break
             prev = rows.get(match_key)
             if not prev:
                 rows[match_key] = row
